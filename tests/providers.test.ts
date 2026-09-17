@@ -3,15 +3,17 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configSchema } from "../src/config.js";
-import { createModelResolver } from "../src/providers.js";
+import { configSchema } from "../src/config";
+import { createModelResolver } from "../src/providers";
 test("loads a custom provider relative to the config file and passes settings", async () => {
   const directory = await mkdtemp(join(tmpdir(), "decide-provider-"));
+
   try {
     await writeFile(
-      join(directory, "custom-provider.mjs"),
-      'export function createProvider(options) { return { evaluationModel(id) { return { specificationVersion: "v4", provider: options.name, modelId: id }; } }; }',
+      join(directory, "custom-provider.ts"),
+      'export function createProvider(options: { name: string }) { return { evaluationModel(id: string) { return { specificationVersion: "v4", provider: options.name, modelId: id }; } }; }',
     );
+
     const config = Schema.decodeUnknownSync(configSchema, {
       onExcessProperty: "error",
     })({
@@ -19,18 +21,20 @@ test("loads a custom provider relative to the config file and passes settings", 
       providers: {
         custom: {
           kind: "custom",
-          module: "./custom-provider.mjs",
+          module: "./custom-provider.ts",
           export: "createProvider",
           options: { name: "custom-test" },
         },
       },
     });
+
     const resolver = await Effect.runPromise(
       createModelResolver({
         config,
         baseDirectory: directory,
       }),
     );
+
     expect(Effect.runSync(resolver(config.model))).toMatchObject({
       mode: "evaluation",
       model: { provider: "custom-test", modelId: "my-model" },
@@ -50,10 +54,9 @@ test("rejects missing credentials without exposing other environment values", as
       },
     },
   });
+
   await expect(
-    Effect.runPromise(
-      createModelResolver({ config, baseDirectory: process.cwd() }),
-    ),
+    Effect.runPromise(createModelResolver({ config, baseDirectory: process.cwd() })),
   ).rejects.toThrow("Missing environment variable");
 });
 test("rejects evaluation mode on a language-only provider", async () => {
@@ -65,13 +68,15 @@ test("rejects evaluation mode on a language-only provider", async () => {
       local: { kind: "openai-compatible", baseURL: "http://localhost:9999/v1" },
     },
   });
+
   const resolver = await Effect.runPromise(
     createModelResolver({
       config,
       baseDirectory: process.cwd(),
     }),
   );
-  expect(() => Effect.runSync(resolver(config.model))).toThrow(
-    "does not support evaluation",
-  );
+
+  expect(() => {
+    return Effect.runSync(resolver(config.model));
+  }).toThrow("does not support evaluation");
 });

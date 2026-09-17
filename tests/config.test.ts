@@ -1,88 +1,91 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
 import { describe, expect, test } from "bun:test";
-import { configSchema, loadConfig } from "../src/config.js";
-import { decisionSchema } from "../src/schemas.js";
+import { configSchema, loadConfig } from "../src/config";
+import { decisionSchema } from "../src/schemas";
 describe("configuration and request validation", () => {
   test("defaults to native Jev evaluation through Gateway", () => {
-    expect(
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({})
-        .model,
-    ).toEqual({
-      provider: "gateway",
-      model: "typesafe-ai/jev",
-      mode: "evaluation",
-    });
+    expect(Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({}).model).toEqual(
+      {
+        provider: "gateway",
+        model: "typesafe-ai/jev",
+        mode: "evaluation",
+      },
+    );
   });
+
   test("rejects unknown providers, duplicate profiles, and reserved IDs", () => {
-    expect(() =>
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
+    expect(() => {
+      return Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
         model: { provider: "missing", model: "x" },
-      }),
-    ).toThrow("Unknown provider");
+      });
+    }).toThrow("Unknown provider");
+
     const profile = {
       id: "cost",
       description: "Cost",
       systemPrompt: "Save money",
     };
-    expect(() =>
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
+
+    expect(() => {
+      return Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
         profiles: [profile, profile],
-      }),
-    ).toThrow("unique");
-    expect(() =>
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
+      });
+    }).toThrow("unique");
+
+    expect(() => {
+      return Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
         profiles: [{ ...profile, id: "default" }],
-      }),
-    ).toThrow("reserved");
-    expect(() =>
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
+      });
+    }).toThrow("reserved");
+
+    expect(() => {
+      return Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
         profiles: [{ ...profile, id: "UPPER_CASE" }],
-      }),
-    ).toThrow();
+      });
+    }).toThrow();
   });
+
   test("rejects invalid provider factories and unknown config fields", () => {
-    expect(() =>
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
+    expect(() => {
+      return Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
         providers: { custom: { kind: "custom" } },
-      }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
+      });
+    }).toThrow();
+
+    expect(() => {
+      return Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
         providers: { local: { kind: "openai-compatible" } },
-      }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
+      });
+    }).toThrow();
+
+    expect(() => {
+      return Schema.decodeUnknownSync(configSchema, { onExcessProperty: "error" })({
         systemPromt: "misspelled",
-      }),
-    ).toThrow();
+      });
+    }).toThrow();
   });
+
   test("supports inline config and rejects conflicting sources", async () => {
     expect(
       (
         await Effect.runPromise(
-          Effect.provide(
-            loadConfig({ json: '{"tools":"both"}' }),
-            NodeFileSystem.layer,
-          ),
+          Effect.provide(loadConfig({ json: '{"tools":"both"}' }), NodeFileSystem.layer),
         )
       ).config.tools,
     ).toBe("both");
+
     await expect(
       Effect.runPromise(
-        Effect.provide(
-          loadConfig({ json: "{}", path: "/tmp/no-file" }),
-          NodeFileSystem.layer,
-        ),
+        Effect.provide(loadConfig({ json: "{}", path: "/tmp/no-file" }), NodeFileSystem.layer),
       ),
     ).rejects.toThrow("either");
+
     await expect(
-      Effect.runPromise(
-        Effect.provide(loadConfig({ json: "{invalid" }), NodeFileSystem.layer),
-      ),
+      Effect.runPromise(Effect.provide(loadConfig({ json: "{invalid" }), NodeFileSystem.layer)),
     ).rejects.toThrow();
   });
+
   test("requires context, multiple distinct options, and bounded input", () => {
     const valid = {
       decision: "Ship?",
@@ -92,29 +95,31 @@ describe("configuration and request validation", () => {
         { id: "no", description: "Wait" },
       ],
     };
-    expect(
-      Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })(
-        valid,
-      ),
-    ).toEqual(valid);
-    expect(() =>
-      Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })({
+
+    expect(Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })(valid)).toEqual(
+      valid,
+    );
+
+    expect(() => {
+      return Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })({
         ...valid,
         context: undefined,
-      }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })({
+      });
+    }).toThrow();
+
+    expect(() => {
+      return Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })({
         ...valid,
         choices: [valid.choices[0], valid.choices[0]],
-      }),
-    ).toThrow("unique");
-    expect(() =>
-      Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })({
+      });
+    }).toThrow("unique");
+
+    expect(() => {
+      return Schema.decodeUnknownSync(decisionSchema, { onExcessProperty: "error" })({
         ...valid,
         context: { huge: "x".repeat(100001) },
-      }),
-    ).toThrow();
+      });
+    }).toThrow();
   });
 });
 
@@ -126,21 +131,22 @@ test("configuration decoding rejects nested unknown fields and preserves default
   ]) {
     await expect(
       Effect.runPromise(
-        loadConfig({ json: JSON.stringify(raw) }).pipe(
-          Effect.provide(NodeFileSystem.layer),
-        ),
+        loadConfig({ json: JSON.stringify(raw) }).pipe(Effect.provide(NodeFileSystem.layer)),
       ),
     ).rejects.toThrow();
   }
+
   const { config } = await Effect.runPromise(
     loadConfig({
       json: '{"model":{"model":" typesafe-ai/jev "},"router":{}}',
     }).pipe(Effect.provide(NodeFileSystem.layer)),
   );
+
   expect(config.model).toEqual({
     provider: "gateway",
     model: "typesafe-ai/jev",
     mode: "evaluation",
   });
+
   expect(config.router.minimumProbability).toBe(0);
 });

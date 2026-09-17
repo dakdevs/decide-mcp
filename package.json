@@ -1,4 +1,55 @@
 {
+  "name": "decide-mcp",
+  "version": "0.1.0",
+  "description": "Configurable decision MCP with AI SDK evaluation, choice percentages, and bias routing.",
+  "keywords": [
+    "agents",
+    "ai-sdk",
+    "decisions",
+    "jev",
+    "mcp",
+    "model-context-protocol"
+  ],
+  "homepage": "https://github.com/dakdevs/decide-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/dakdevs/decide-mcp/issues"
+  },
+  "license": "MIT",
+  "author": "Dak Washbrook <hey@dak.dev> (https://dak.dev)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dakdevs/decide-mcp.git"
+  },
+  "bin": {
+    "decide-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "readme.md",
+    "examples",
+    "license.md"
+  ],
+  "type": "module",
+  "imports": {
+    "#mcp/*": "@modelcontextprotocol/sdk/*.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "build": "bun build src/cli.ts --target=node --packages=external --outdir=dist",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings .",
+    "format:check": "oxfmt --check .",
+    "test": "bun test",
+    "test:e2e": "bun run build && bun test tests/e2e",
+    "prepack": "bun run build >&2",
+    "lint:fix": "oxlint --fix .",
+    "fmt": "oxfmt --write ."
+  },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.56",
     "@ai-sdk/gateway": "4.0.85",
@@ -13,61 +64,13 @@
     "effect-agent": "0.1.0-beta.103"
   },
   "devDependencies": {
-    "@eslint/js": "10.0.1",
+    "@dakdevs/oxlint-plugin": "github:dakdevs/oxlint-plugin#bb28d5221edb256319ea383b92e8073c1836c6f0",
     "@types/bun": "1.4.2",
-    "eslint": "10.10.0",
-    "prettier": "3.9.7",
-    "typescript": "5.9.3",
-    "typescript-eslint": "8.70.0"
+    "oxfmt": "0.68.0",
+    "oxlint": "1.80.0",
+    "typescript": "5.9.3"
   },
-  "name": "decide-mcp",
-  "version": "0.1.0",
-  "description": "Configurable decision MCP with AI SDK evaluation, choice percentages, and bias routing.",
-  "type": "module",
-  "bin": {
-    "decide-mcp": "dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "readme.md",
-    "examples",
-    "license.md"
-  ],
   "engines": {
     "node": ">=22.19.0"
-  },
-  "scripts": {
-    "dev": "bun run src/cli.ts",
-    "build": "bun build src/cli.ts --target=node --packages=external --outdir=dist",
-    "start": "node dist/cli.js",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "prettier": "prettier --write .",
-    "format:check": "prettier --check .",
-    "test": "bun test",
-    "test:e2e": "bun run build && bun test tests/e2e",
-    "prepack": "bun run build >&2"
-  },
-  "license": "MIT",
-  "author": "Dak Washbrook <hey@dak.dev> (https://dak.dev)",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/dakdevs/decide-mcp.git"
-  },
-  "homepage": "https://github.com/dakdevs/decide-mcp#readme",
-  "bugs": {
-    "url": "https://github.com/dakdevs/decide-mcp/issues"
-  },
-  "keywords": [
-    "mcp",
-    "ai-sdk",
-    "jev",
-    "decisions",
-    "agents",
-    "model-context-protocol"
-  ],
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
   }
 }

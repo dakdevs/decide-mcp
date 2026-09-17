@@ -1,11 +1,8 @@
 import { Effect, Schema } from "effect";
 import { describe, expect, test } from "bun:test";
-import {
-  Experimental_EvaluationMockModelV4,
-  MockLanguageModelV4,
-} from "ai/test";
-import { configSchema } from "../src/config.js";
-import { createScorer, validateEstimates } from "../src/scoring.js";
+import { Experimental_EvaluationMockModelV4, MockLanguageModelV4 } from "ai/test";
+import { configSchema } from "../src/config";
+import { createScorer, validateEstimates } from "../src/scoring";
 const config = Schema.decodeUnknownSync(configSchema, {
   onExcessProperty: "error",
 })({});
@@ -26,10 +23,10 @@ describe("probability integrity", () => {
   test("preserves native probabilities and does not confuse confidence with probability", async () => {
     const model = new Experimental_EvaluationMockModelV4({
       doEvaluate: async (options) => {
-        expect(options.questions.decision?.instructions).toContain(
-          "Prefer reliability",
-        );
+        expect(options.questions.decision?.instructions).toContain("Prefer reliability");
+
         expect(options.state).toEqual(input);
+
         return {
           answers: {
             decision: {
@@ -43,10 +40,14 @@ describe("probability integrity", () => {
         };
       },
     });
+
     const score = createScorer({
       config,
-      resolveModel: () => Effect.succeed({ mode: "evaluation", model }),
+      resolveModel: () => {
+        return Effect.succeed({ mode: "evaluation", model });
+      },
     });
+
     expect(await Effect.runPromise(score(args))).toMatchObject({
       selectedChoice: "ship",
       choices: [
@@ -56,75 +57,100 @@ describe("probability integrity", () => {
       percentageSource: "provider-distribution",
     });
   });
+
   test("keeps absent distributions absent", async () => {
     const model = new Experimental_EvaluationMockModelV4({
-      doEvaluate: async () => ({
-        answers: { decision: { type: "choice", choice: "ship" } },
-        warnings: [],
-      }),
+      doEvaluate: async () => {
+        return {
+          answers: { decision: { type: "choice", choice: "ship" } },
+          warnings: [],
+        };
+      },
     });
+
     const result = await Effect.runPromise(
       createScorer({
         config,
-        resolveModel: () => Effect.succeed({ mode: "evaluation", model }),
+        resolveModel: () => {
+          return Effect.succeed({ mode: "evaluation", model });
+        },
       })(args),
     );
+
     expect(result.percentageSource).toBe("unavailable");
-    expect(result.choices.every((choice) => choice.percentage === null)).toBe(
-      true,
-    );
+
+    expect(
+      result.choices.every((choice) => {
+        return choice.percentage === null;
+      }),
+    ).toBe(true);
   });
+
   test("SDK rejects malformed native distributions", async () => {
     const model = new Experimental_EvaluationMockModelV4({
-      doEvaluate: async () => ({
-        answers: {
-          decision: {
-            type: "choice",
-            choice: "ship",
-            probabilities: { ship: 0.9, wait: 0.9 },
+      doEvaluate: async () => {
+        return {
+          answers: {
+            decision: {
+              type: "choice",
+              choice: "ship",
+              probabilities: { ship: 0.9, wait: 0.9 },
+            },
           },
-        },
-        warnings: [],
-      }),
+          warnings: [],
+        };
+      },
     });
+
     await expect(
       Effect.runPromise(
         createScorer({
           config,
-          resolveModel: () => Effect.succeed({ mode: "evaluation", model }),
+          resolveModel: () => {
+            return Effect.succeed({ mode: "evaluation", model });
+          },
         })(args),
       ),
     ).rejects.toThrow();
   });
+
   test("keeps provider rounding without normalization", async () => {
-    const threeChoices = [
-      ...input.choices,
-      { id: "review", description: "Review first" },
-    ];
+    const threeChoices = [...input.choices, { id: "review", description: "Review first" }];
+
     const model = new Experimental_EvaluationMockModelV4({
-      doEvaluate: async () => ({
-        answers: {
-          decision: {
-            type: "choice",
-            choice: "ship",
-            probabilities: { ship: 0.33, wait: 0.33, review: 0.33 },
+      doEvaluate: async () => {
+        return {
+          answers: {
+            decision: {
+              type: "choice",
+              choice: "ship",
+              probabilities: { ship: 0.33, wait: 0.33, review: 0.33 },
+            },
           },
-        },
-        rounding: { probabilityDecimals: 2 },
-        warnings: [],
-      }),
+          rounding: { probabilityDecimals: 2 },
+          warnings: [],
+        };
+      },
     });
+
     const result = await Effect.runPromise(
       createScorer({
         config,
-        resolveModel: () => Effect.succeed({ mode: "evaluation", model }),
+        resolveModel: () => {
+          return Effect.succeed({ mode: "evaluation", model });
+        },
       })({ ...args, input: { ...input, choices: threeChoices } }),
     );
-    expect(result.choices.map((choice) => choice.percentage)).toEqual([
-      33, 33, 33,
-    ]);
+
+    expect(
+      result.choices.map((choice) => {
+        return choice.percentage;
+      }),
+    ).toEqual([33, 33, 33]);
+
     expect(result.warnings.join(" ")).toContain("rounded");
   });
+
   test("validates estimated option coverage and sums", () => {
     for (const estimates of [
       [{ id: "ship", probability: 1 }],
@@ -144,13 +170,13 @@ describe("probability integrity", () => {
         { id: "ship", probability: NaN },
         { id: "wait", probability: 0.5 },
       ],
-    ])
-      expect(() =>
-        Effect.runSync(
-          validateEstimates({ choices: input.choices, estimates }),
-        ),
-      ).toThrow();
+    ]) {
+      expect(() => {
+        return Effect.runSync(validateEstimates({ choices: input.choices, estimates }));
+      }).toThrow();
+    }
   });
+
   test("language estimates use input-order tie-breaking and carry a source label", async () => {
     const model = new MockLanguageModelV4({
       doGenerate: {
@@ -173,14 +199,20 @@ describe("probability integrity", () => {
         warnings: [],
       },
     });
+
     const result = await Effect.runPromise(
       createScorer({
         config,
-        resolveModel: () => Effect.succeed({ mode: "language", model }),
+        resolveModel: () => {
+          return Effect.succeed({ mode: "language", model });
+        },
       })(args),
     );
+
     expect(result.selectedChoice).toBe("ship");
+
     expect(result.percentageSource).toBe("model-estimate");
+
     expect(model.doGenerateCalls[0]?.prompt[0]).toMatchObject({
       role: "system",
     });
@@ -191,25 +223,33 @@ test.each(["evaluation", "language"] as const)(
   "Effect interruption aborts the %s provider request",
   async (mode) => {
     let providerSignal: AbortSignal | undefined;
+
     let started!: () => void;
+
     const ready = new Promise<void>((resolve) => {
       started = resolve;
     });
+
     const pending = ({ abortSignal }: { abortSignal?: AbortSignal }) => {
       providerSignal = abortSignal;
+
       started();
-      return new Promise<never>((_resolve, reject) =>
-        abortSignal?.addEventListener(
+
+      return new Promise<never>((_resolve, reject) => {
+        return abortSignal?.addEventListener(
           "abort",
-          () => reject(new Error("aborted")),
+          () => {
+            return reject(new Error("aborted"));
+          },
           { once: true },
-        ),
-      );
+        );
+      });
     };
+
     const score = createScorer({
       config,
-      resolveModel: () =>
-        mode === "evaluation"
+      resolveModel: () => {
+        return mode === "evaluation"
           ? Effect.succeed({
               mode,
               model: new Experimental_EvaluationMockModelV4({
@@ -219,56 +259,73 @@ test.each(["evaluation", "language"] as const)(
           : Effect.succeed({
               mode,
               model: new MockLanguageModelV4({ doGenerate: pending }),
-            }),
+            });
+      },
     });
+
     const controller = new AbortController();
-    const running = Effect.runPromise(
-      score({ ...args, model: { ...args.model, mode } }),
-      { signal: controller.signal },
-    );
+
+    const running = Effect.runPromise(score({ ...args, model: { ...args.model, mode } }), {
+      signal: controller.signal,
+    });
+
     const outcome = running.then(
-      () => false,
-      () => true,
+      () => {
+        return false;
+      },
+      () => {
+        return true;
+      },
     );
+
     await ready;
+
     controller.abort();
+
     expect(await outcome).toBe(true);
+
     expect(providerSignal?.aborted).toBe(true);
   },
 );
 
 test("language agent isolates concurrent requests and preserves provider settings", async () => {
   const model = new MockLanguageModelV4({
-    doGenerate: async (options) => ({
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            choices: [
-              { id: "ship", probability: 0.6 },
-              { id: "wait", probability: 0.4 },
-            ],
-          }),
+    doGenerate: async (options) => {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              choices: [
+                { id: "ship", probability: 0.6 },
+                { id: "wait", probability: 0.4 },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 },
         },
-      ],
-      finishReason: { unified: "stop", raw: "stop" },
-      usage: {
-        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
-        outputTokens: { total: 1, text: 1, reasoning: 0 },
-      },
-      warnings: options.providerOptions?.fixture?.warn
-        ? [{ type: "other", message: "fixture warning" }]
-        : [],
-    }),
+        warnings: options.providerOptions?.fixture?.warn
+          ? [{ type: "other", message: "fixture warning" }]
+          : [],
+      };
+    },
   });
+
   const score = createScorer({
     config,
-    resolveModel: () => Effect.succeed({ mode: "language", model }),
+    resolveModel: () => {
+      return Effect.succeed({ mode: "language", model });
+    },
   });
+
   const results = await Effect.runPromise(
     Effect.all(
-      ["first-private-context", "second-private-context"].map((context) =>
-        score({
+      ["first-private-context", "second-private-context"].map((context) => {
+        return score({
           ...args,
           input: { ...input, context },
           model: {
@@ -276,29 +333,36 @@ test("language agent isolates concurrent requests and preserves provider setting
             mode: "language",
             providerOptions: { fixture: { warn: true } },
           },
-        }),
-      ),
+        });
+      }),
       { concurrency: "unbounded" },
     ),
   );
+
   expect(model.doGenerateCalls).toHaveLength(2);
-  const prompts = model.doGenerateCalls.map((call) =>
-    JSON.stringify(call.prompt),
-  );
-  for (const prompt of prompts)
+
+  const prompts = model.doGenerateCalls.map((call) => {
+    return JSON.stringify(call.prompt);
+  });
+
+  for (const prompt of prompts) {
     expect(
-      prompt.includes("first-private-context") !==
-        prompt.includes("second-private-context"),
+      prompt.includes("first-private-context") !== prompt.includes("second-private-context"),
     ).toBe(true);
+  }
+
   expect(
-    results.every((result) =>
-      result.warnings.some((warning) =>
-        warning.includes("unsupported settings"),
-      ),
-    ),
+    results.every((result) => {
+      return result.warnings.some((warning) => {
+        return warning.includes("unsupported settings");
+      });
+    }),
   ).toBe(true);
+
   expect(
-    model.doGenerateCalls.every((call) => call.responseFormat?.type === "json"),
+    model.doGenerateCalls.every((call) => {
+      return call.responseFormat?.type === "json";
+    }),
   ).toBe(true);
 });
 
@@ -310,29 +374,29 @@ test.each([
       { id: "wait", probability: 0.8 },
     ],
   }),
-])(
-  "language agent rejects invalid output without additional model turns",
-  async (text) => {
-    const model = new MockLanguageModelV4({
-      doGenerate: {
-        content: [{ type: "text", text }],
-        finishReason: { unified: "stop", raw: "stop" },
-        usage: {
-          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
-          outputTokens: { total: 1, text: 1, reasoning: 0 },
-        },
-        warnings: [],
+])("language agent rejects invalid output without additional model turns", async (text) => {
+  const model = new MockLanguageModelV4({
+    doGenerate: {
+      content: [{ type: "text", text }],
+      finishReason: { unified: "stop", raw: "stop" },
+      usage: {
+        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 1, text: 1, reasoning: 0 },
       },
-    });
-    const score = createScorer({
-      config,
-      resolveModel: () => Effect.succeed({ mode: "language", model }),
-    });
-    await expect(
-      Effect.runPromise(
-        score({ ...args, model: { ...args.model, mode: "language" } }),
-      ),
-    ).rejects.toThrow();
-    expect(model.doGenerateCalls).toHaveLength(1);
-  },
-);
+      warnings: [],
+    },
+  });
+
+  const score = createScorer({
+    config,
+    resolveModel: () => {
+      return Effect.succeed({ mode: "language", model });
+    },
+  });
+
+  await expect(
+    Effect.runPromise(score({ ...args, model: { ...args.model, mode: "language" } })),
+  ).rejects.toThrow();
+
+  expect(model.doGenerateCalls).toHaveLength(1);
+});

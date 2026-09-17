@@ -9,8 +9,8 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Experimental_EvaluationModel, LanguageModel } from "ai";
 import { Effect } from "effect";
-import type { Config, ModelConfig } from "./config.js";
-import { ProviderError } from "./errors.js";
+import type { Config, ModelConfig } from "./config";
+import { ProviderError } from "./errors";
 
 type Provider = {
   evaluationModel?: (id: string) => Experimental_EvaluationModel;
@@ -26,19 +26,23 @@ const createProvider = Effect.fn("createProvider")(function* ({
   definition: Config["providers"][string];
   baseDirectory: string;
 }) {
-  const apiKey = definition.apiKeyEnv
-    ? process.env[definition.apiKeyEnv]
-    : undefined;
-  if (definition.apiKeyEnv && !apiKey)
+  const apiKey = definition.apiKeyEnv ? process.env[definition.apiKeyEnv] : undefined;
+
+  if (definition.apiKeyEnv && !apiKey) {
     return yield* new ProviderError({
       message: `Missing environment variable: ${definition.apiKeyEnv}`,
     });
+  }
+
   const settings = { apiKey, baseURL: definition.baseURL };
-  const failure = () =>
-    new ProviderError({
+
+  const failure = () => {
+    return new ProviderError({
       message: `Provider ${name}: initialization failed. Check factory and settings.`,
     });
-  if (definition.kind !== "custom")
+  };
+
+  if (definition.kind !== "custom") {
     return yield* Effect.try({
       try: (): Provider => {
         switch (definition.kind) {
@@ -64,10 +68,14 @@ const createProvider = Effect.fn("createProvider")(function* ({
       },
       catch: failure,
     });
+  }
+
   const moduleUrl = yield* Effect.try({
     try: () => {
       const specifier = definition.module!;
+
       const require = createRequire(resolve(baseDirectory, "package.json"));
+
       return pathToFileURL(
         specifier.startsWith(".") || specifier.startsWith("/")
           ? resolve(baseDirectory, specifier)
@@ -76,29 +84,40 @@ const createProvider = Effect.fn("createProvider")(function* ({
     },
     catch: failure,
   });
+
   const imported: Record<string, unknown> = yield* Effect.tryPromise({
-    try: () => import(moduleUrl),
+    try: () => {
+      return import(moduleUrl);
+    },
     catch: failure,
   });
+
   const factory = imported[definition.export!];
-  if (typeof factory !== "function") return yield* failure();
+
+  if (typeof factory !== "function") {
+    return yield* failure();
+  }
+
   const provider: Provider = yield* Effect.tryPromise({
-    try: () =>
-      Promise.resolve(
+    try: () => {
+      return Promise.resolve(
         factory({
           ...definition.options,
           ...Object.fromEntries(
-            Object.entries(settings).filter(([, value]) => value !== undefined),
+            Object.entries(settings).filter(([, value]) => {
+              return value !== undefined;
+            }),
           ),
         }),
-      ),
+      );
+    },
     catch: failure,
   });
-  if (
-    !provider ||
-    (typeof provider !== "object" && typeof provider !== "function")
-  )
+
+  if (!provider || (typeof provider !== "object" && typeof provider !== "function")) {
     return yield* failure();
+  }
+
   return provider;
 });
 
@@ -109,39 +128,47 @@ export const createModelResolver = Effect.fn("createModelResolver")(function* ({
   config: Config;
   baseDirectory: string;
 }) {
-  const entries = yield* Effect.forEach(
-    Object.entries(config.providers),
-    ([name, definition]) =>
-      createProvider({ name, definition, baseDirectory }).pipe(
-        Effect.map((provider) => [name, provider] as const),
-      ),
-  );
+  const entries = yield* Effect.forEach(Object.entries(config.providers), ([name, definition]) => {
+    return createProvider({ name, definition, baseDirectory }).pipe(
+      Effect.map((provider) => {
+        return [name, provider] as const;
+      }),
+    );
+  });
+
   const providers = new Map(entries);
-  return (model: ModelConfig) =>
-    Effect.try({
+
+  return (model: ModelConfig) => {
+    return Effect.try({
       try: () => {
         const provider = providers.get(model.provider);
+
         if (model.mode === "evaluation") {
-          if (typeof provider?.evaluationModel !== "function")
+          if (typeof provider?.evaluationModel !== "function") {
             throw new Error("Evaluation mode unavailable");
+          }
+
           return {
             mode: "evaluation" as const,
             model: provider.evaluationModel(model.model),
           };
         }
-        if (typeof provider?.languageModel !== "function")
+
+        if (typeof provider?.languageModel !== "function") {
           throw new Error("Language mode unavailable");
+        }
+
         return {
           mode: "language" as const,
           model: provider.languageModel(model.model),
         };
       },
-      catch: () =>
-        new ProviderError({
+      catch: () => {
+        return new ProviderError({
           message: `Provider ${model.provider} does not support ${model.mode} mode or model.`,
-        }),
+        });
+      },
     });
+  };
 });
-export type ModelResolver = Effect.Success<
-  ReturnType<typeof createModelResolver>
->;
+export type ModelResolver = Effect.Success<ReturnType<typeof createModelResolver>>;

@@ -195,9 +195,13 @@ This migration pins `effect` and `@effect/platform-node` to `4.0.0-rc.115` and `
 
 Each request is independent. There is no conversation memory, persistence, action execution, or cross-request policy mutation. Decision data is sent to the configured provider. Configured prompts guide model behavior; they are not a security boundary against prompt injection.
 
+Development source, test fixtures, and tool configurations are TypeScript. Imports omit file extensions, with TypeScript using bundler resolution to match the Bun build. The `#mcp/*` package import map handles the MCP SDK's extension-required export paths while keeping source imports extensionless.
+
+Linting uses Oxlint with the `recommended` and `testing` presets from [`@dakdevs/oxlint-plugin/config`](https://github.com/dakdevs/oxlint-plugin), plus consistent type imports and extensionless imports. The shared config is pinned to a Git commit and its supported Oxlint 1.80 release. Formatting uses Oxfmt.
+
 ```sh
 bun run lint
-bun run prettier
+bun run fmt
 bun run format:check
 bun run typecheck
 bun test
