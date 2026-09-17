@@ -34,6 +34,8 @@ test("npm tarball installs independently and exposes a working MCP executable", 
 
     expect(files).toContain("license.md");
 
+    expect(files).toContain("docs/agent-skill.md");
+
     expect(
       files.some((file) => {
         return file.startsWith("src/") || file.startsWith("tests/") || file.includes(".env");
@@ -82,7 +84,7 @@ test("npm tarball installs independently and exposes a working MCP executable", 
       (await client.listTools()).tools.map((tool) => {
         return tool.name;
       }),
-    ).toEqual(["decide"]);
+    ).toEqual(["decide", "evaluate"]);
   } finally {
     await client.close();
 

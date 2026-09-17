@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { Client } from "#mcp/client/index";
 import { StdioClientTransport } from "#mcp/client/stdio";
+import { evaluationResultSchema } from "../../src/evaluation-schemas";
 import { resultSchema } from "../../src/schemas";
 const input = {
   decision: "Release now?",
@@ -124,7 +125,7 @@ test("stdio handshake, discovery, native decision, validation, and secret isolat
         list.tools.map((tool) => {
           return tool.name;
         }),
-      ).toEqual(["decide"]);
+      ).toEqual(["decide", "evaluate"]);
 
       expect(list.tools[0]?.outputSchema).toBeDefined();
 
@@ -184,7 +185,7 @@ test("automatic profile selection and explicit tools make two and one calls resp
         (await client.listTools()).tools.map((tool) => {
           return tool.name;
         }),
-      ).toEqual(["decide", "decide-default", "decide-safety"]);
+      ).toEqual(["decide", "decide-default", "decide-safety", "evaluate"]);
 
       const routed = Schema.decodeUnknownSync(resultSchema)(
         (await client.callTool({ name: "decide", arguments: input })).structuredContent,
@@ -398,91 +399,106 @@ test("OpenAI-compatible language provider returns labeled estimates through the 
   }
 });
 
-test("MCP cancellation interrupts the provider and leaves the server usable", async () => {
-  let started!: () => void;
+test.each(["decide", "evaluate"])(
+  "MCP %s cancellation interrupts the provider and leaves the server usable",
+  async (toolName) => {
+    let started!: () => void;
 
-  const ready = new Promise<void>((resolve) => {
-    started = resolve;
-  });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
 
-  let aborted!: () => void;
+    let aborted!: () => void;
 
-  const cancelled = new Promise<void>((resolve) => {
-    aborted = resolve;
-  });
+    const cancelled = new Promise<void>((resolve) => {
+      aborted = resolve;
+    });
 
-  const api = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch(request) {
-      if (new URL(request.url).pathname === "/started") {
-        started();
-      }
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        if (new URL(request.url).pathname === "/started") {
+          started();
+        }
 
-      if (new URL(request.url).pathname === "/aborted") {
-        aborted();
-      }
+        if (new URL(request.url).pathname === "/aborted") {
+          aborted();
+        }
 
-      return new Response("ok");
-    },
-  });
-
-  try {
-    await withServer({
-      config: {
-        providers: {
-          fixture: {
-            kind: "custom",
-            module: resolve(import.meta.dir, "../fixtures/cancellable-provider.ts"),
-            export: "createProvider",
-            baseURL: String(api.url).replace(/\/$/, ""),
-          },
-        },
-      },
-      handler: () => {
-        return Response.error();
-      },
-      run: async (client) => {
-        const controller = new AbortController();
-
-        const outcome = client
-          .callTool(
-            {
-              name: "decide",
-              arguments: { ...input, context: "wait-for-cancellation" },
-            },
-            undefined,
-            { signal: controller.signal },
-          )
-          .then(
-            () => {
-              return false;
-            },
-            () => {
-              return true;
-            },
-          );
-
-        await ready;
-
-        controller.abort();
-
-        expect(await outcome).toBe(true);
-
-        await cancelled;
-
-        const result = await client.callTool({
-          name: "decide",
-          arguments: input,
-        });
-
-        expect(result.isError).not.toBe(true);
+        return new Response("ok");
       },
     });
-  } finally {
-    await api.stop(true);
-  }
-});
+
+    try {
+      await withServer({
+        config: {
+          providers: {
+            fixture: {
+              kind: "custom",
+              module: resolve(import.meta.dir, "../fixtures/cancellable-provider.ts"),
+              export: "createProvider",
+              baseURL: String(api.url).replace(/\/$/, ""),
+            },
+          },
+        },
+        handler: () => {
+          return Response.error();
+        },
+        run: async (client) => {
+          const controller = new AbortController();
+
+          const outcome = client
+            .callTool(
+              {
+                name: toolName,
+                arguments:
+                  toolName === "decide"
+                    ? { ...input, context: "wait-for-cancellation" }
+                    : {
+                        state: { context: "wait-for-cancellation" },
+                        questions: {
+                          decision: {
+                            type: "choice",
+                            instructions: "Choose",
+                            criteria: { ship: "Release", wait: "Wait" },
+                          },
+                        },
+                      },
+              },
+              undefined,
+              { signal: controller.signal },
+            )
+            .then(
+              () => {
+                return false;
+              },
+              () => {
+                return true;
+              },
+            );
+
+          await ready;
+
+          controller.abort();
+
+          expect(await outcome).toBe(true);
+
+          await cancelled;
+
+          const result = await client.callTool({
+            name: "decide",
+            arguments: input,
+          });
+
+          expect(result.isError).not.toBe(true);
+        },
+      });
+    } finally {
+      await api.stop(true);
+    }
+  },
+);
 
 test("CLI startup errors are nonzero and sanitized", () => {
   const result = spawnSync("node", [resolve(import.meta.dir, "../../dist/cli.js")], {
@@ -516,3 +532,261 @@ test("stdin EOF releases the server scope and exits cleanly", () => {
 
   expect(result.stderr).toBe("");
 });
+
+const batchInput = {
+  state: { tests: "passing", rollback: "unverified" },
+  questions: {
+    verified: { type: "boolean", instructions: "Was rollback verified?" },
+    action: {
+      type: "choice",
+      instructions: "Which action?",
+      criteria: { ship: "Release now", wait: "Verify rollback first" },
+    },
+    readiness: {
+      type: "score",
+      instructions: "Rate release readiness.",
+      criteria: [
+        "Tests missing",
+        "Tests pass but recovery unverified",
+        "Tests and recovery verified",
+      ],
+    },
+  },
+};
+const batchAnswers = {
+  verified: { type: "boolean", probability: 0.02 },
+  action: { type: "choice", choice: "wait", probabilities: { ship: 0.2, wait: 0.8 } },
+  readiness: { type: "score", score: 0.9, probabilities: { "0": 0.1, "1": 0.9, "2": 0 } },
+} as const;
+
+test.each(["typesafe", "gateway"])(
+  "evaluate exposes mixed batches through the %s adapter and discovers explicit profiles",
+  async (kind) => {
+    let calls = 0;
+
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        calls++;
+
+        expect(request.headers.get("authorization")).toBe("Bearer fixture-secret");
+
+        const body = await request.json();
+
+        expect(body.state).toEqual(batchInput.state);
+
+        expect(Object.keys(body.questions)).toEqual(Object.keys(batchInput.questions));
+
+        expect(body.questions.verified.type).toBe(kind === "typesafe" ? "noul" : "boolean");
+
+        expect(JSON.stringify(body.questions.action.instructions)).toContain(
+          "Prefer reversible changes",
+        );
+
+        if (kind === "gateway") {
+          expect(new URL(request.url).pathname).toBe("/evaluation-model");
+
+          return Response.json({
+            answers: batchAnswers,
+            rounding: { probabilityDecimals: 2, scoreDecimals: 2 },
+            providerMetadata: { typesafe: { confidence: { action: 0.63, readiness: 0.8 } } },
+            warnings: [],
+          });
+        }
+
+        expect(new URL(request.url).pathname).toBe("/systemone");
+
+        return Response.json({
+          model: "jev-latest",
+          answers: {
+            verified: { type: "noul", noul: 0.02 },
+            action: { ...batchAnswers.action, confidence: 0.63 },
+            readiness: { ...batchAnswers.readiness, confidence: 0.8 },
+          },
+          usage: { input_tokens: 100, output_tokens: 30 },
+        });
+      },
+    });
+
+    try {
+      await withServer({
+        config: {
+          profiles,
+          model: {
+            provider: "fixture",
+            model: kind === "gateway" ? "typesafe-ai/jev" : "jev-latest",
+          },
+          providers: {
+            fixture: {
+              kind,
+              baseURL: String(api.url).replace(/\/$/, ""),
+              apiKeyEnv: "DECIDE_TEST_KEY",
+            },
+          },
+        },
+        handler: () => {
+          return Response.error();
+        },
+        run: async (client) => {
+          expect(client.getInstructions()).toContain("batch independent questions");
+
+          const tool = (await client.listTools()).tools.find((entry) => {
+            return entry.name === "evaluate";
+          });
+
+          expect(tool?.description).toContain("safety");
+
+          expect(tool?.inputSchema.properties).toHaveProperty("questions");
+
+          expect(tool?.outputSchema).toBeDefined();
+
+          const response = await client.callTool({
+            name: "evaluate",
+            arguments: { ...batchInput, profile: "safety" },
+          });
+
+          expect(response.isError).not.toBe(true);
+
+          const result = Schema.decodeUnknownSync(evaluationResultSchema)(
+            response.structuredContent,
+          );
+
+          expect(result.answers).toEqual(batchAnswers);
+
+          expect(result.profile).toBe("safety");
+
+          expect(result.metadata.action?.confidence).toBe(0.63);
+
+          expect(result.metadata.verified?.confidence).toBeNull();
+
+          expect(result.metadata.readiness?.levels).toEqual(
+            batchInput.questions.readiness.criteria,
+          );
+
+          expect(result.rounding).toEqual({ probabilityDecimals: 2, scoreDecimals: 2 });
+
+          expect(calls).toBe(1);
+
+          for (const argumentsValue of [
+            { ...batchInput, profile: "missing" },
+            { ...batchInput, questions: {} },
+            {
+              ...batchInput,
+              questions: { q: { type: "boolean", instructions: "Valid?", extra: "invalid" } },
+            },
+          ]) {
+            const invalid = await client.callTool({ name: "evaluate", arguments: argumentsValue });
+
+            expect(invalid.isError).toBe(true);
+          }
+
+          expect(calls).toBe(1);
+        },
+      });
+    } finally {
+      await api.stop(true);
+    }
+  },
+);
+
+test("evaluate language batches use one provider request and return labeled distributions", async () => {
+  let calls = 0;
+
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      calls++;
+
+      const body = await request.json();
+
+      expect(new URL(request.url).pathname).toBe("/chat/completions");
+
+      expect(body.response_format.type).toBe("json_object");
+
+      expect(JSON.stringify(body.messages)).toContain("verified");
+
+      return Response.json({
+        id: "fixture",
+        object: "chat.completion",
+        created: 1,
+        model: "test-model",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: JSON.stringify({ answers: batchAnswers }) },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      });
+    },
+  });
+
+  try {
+    await withServer({
+      config: {
+        model: { provider: "fixture", model: "test-model", mode: "language" },
+        providers: {
+          fixture: { kind: "openai-compatible", baseURL: String(api.url).replace(/\/$/, "") },
+        },
+      },
+      handler: () => {
+        return Response.error();
+      },
+      run: async (client) => {
+        const response = await client.callTool({ name: "evaluate", arguments: batchInput });
+
+        expect(response.isError).not.toBe(true);
+
+        const result = Schema.decodeUnknownSync(evaluationResultSchema)(response.structuredContent);
+
+        expect(result.answers).toEqual(batchAnswers);
+
+        expect(
+          Object.values(result.metadata).every((entry) => {
+            return entry.source === "model-estimate" && entry.confidence === null;
+          }),
+        ).toBe(true);
+
+        expect(result.usage?.totalTokens).toBe(30);
+
+        expect(calls).toBe(1);
+      },
+    });
+  } finally {
+    await api.stop(true);
+  }
+});
+
+test.each(["http-error", "malformed", "timeout"])(
+  "evaluate handles %s with a sanitized MCP error",
+  async (failure) => {
+    await withServer({
+      config: { timeoutMs: failure === "timeout" ? 100 : 30000 },
+      handler: async () => {
+        if (failure === "timeout") {
+          await Bun.sleep(300);
+        }
+
+        if (failure === "http-error") {
+          return Response.json({ error: "fixture-secret sensitive context" }, { status: 401 });
+        }
+
+        return Response.json({ answers: { verified: { type: "noul", noul: 2 } } });
+      },
+      run: async (client) => {
+        const result = await client.callTool({ name: "evaluate", arguments: batchInput });
+
+        expect(result.isError).toBe(true);
+
+        expect(result.structuredContent).toBeUndefined();
+
+        expect(JSON.stringify(result)).not.toContain("fixture-secret");
+
+        expect(JSON.stringify(result)).not.toContain("sensitive context");
+      },
+    });
+  },
+);

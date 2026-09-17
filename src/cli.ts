@@ -6,6 +6,7 @@ import { ConfigError } from "./errors";
 import { loadConfig } from "./config";
 import { createModelResolver } from "./providers";
 import { createScorer } from "./scoring";
+import { createEvaluationService } from "./evaluation-service";
 import { runServer } from "./server";
 
 const main = Effect.gen(function* () {
@@ -54,7 +55,11 @@ const main = Effect.gen(function* () {
     resolveModel,
   );
 
-  yield* runServer({ config, score: createScorer({ config, resolveModel }) });
+  yield* runServer({
+    config,
+    score: createScorer({ config, resolveModel }),
+    evaluate: createEvaluationService({ config, resolveModel }),
+  });
 });
 
 main.pipe(

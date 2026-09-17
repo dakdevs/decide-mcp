@@ -27,7 +27,8 @@
     "dist",
     "readme.md",
     "examples",
-    "license.md"
+    "license.md",
+    "docs/agent-skill.md"
   ],
   "type": "module",
   "imports": {

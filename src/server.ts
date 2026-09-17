@@ -1,12 +1,12 @@
 import { Server } from "#mcp/server/index";
 import { StdioServerTransport } from "#mcp/server/stdio";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "#mcp/types";
-import { Cause, Deferred, Effect, FiberSet, Schema } from "effect";
-import { McpSchema, Tool } from "effect/unstable/ai";
+import { Cause, Deferred, Effect, FiberSet } from "effect";
+import { agentInstructions } from "./agent-guidance";
+import { createTools } from "./tools";
+import type { Evaluator } from "./evaluation-service";
 import type { Config } from "./config";
-import { createDecisionService } from "./decision-service";
 import { ConfigError, DecisionError, decisionFailureMessage } from "./errors";
-import { decisionSchema, resultSchema } from "./schemas";
 import type { Scorer } from "./scoring";
 
 // Keep the SDK only at the wire boundary. Effect rc.115's native MCP server
@@ -15,9 +15,11 @@ import type { Scorer } from "./scoring";
 export const runServer = Effect.fn("runServer")(function* ({
   config,
   score,
+  evaluate,
 }: {
   config: Config;
   score: Scorer;
+  evaluate: Evaluator;
 }) {
   const runRequest = yield* FiberSet.makeRuntimePromise();
 
@@ -46,7 +48,10 @@ export const runServer = Effect.fn("runServer")(function* ({
 
   const server = yield* Effect.acquireRelease(
     Effect.sync(() => {
-      return new Server({ name: "decide-mcp", version: "0.1.0" }, { capabilities: { tools: {} } });
+      return new Server(
+        { name: "decide-mcp", version: "0.1.0" },
+        { capabilities: { tools: {} }, instructions: agentInstructions },
+      );
     }),
     (server) => {
       return Effect.promise(() => {
@@ -55,44 +60,7 @@ export const runServer = Effect.fn("runServer")(function* ({
     },
   );
 
-  const inputSchema = yield* Schema.decodeUnknownEffect(McpSchema.ToolJsonSchema)(
-    Tool.getJsonSchemaFromSchema(decisionSchema),
-  );
-
-  const outputSchema = yield* Schema.decodeUnknownEffect(McpSchema.ToolJsonSchema)(
-    Tool.getJsonSchemaFromSchema(resultSchema),
-  );
-
-  const definitions: ReadonlyArray<{
-    name: string;
-    description: string;
-    profileId?: string;
-  }> = [
-    {
-      name: "decide",
-      description:
-        "Evaluate a decision, context, and choices. Returns a recommendation and percentages with their source. Automatically selects a configured bias profile when routing is enabled. Percentages are not guarantees. The calling agent retains responsibility for acting.",
-    },
-    ...(config.tools === "routed"
-      ? []
-      : [
-          {
-            name: "decide-default",
-            description:
-              "Evaluate with only the default policy, bypassing automatic profile selection.",
-            profileId: "default",
-          },
-          ...config.profiles.map((profile) => {
-            return {
-              name: `decide-${profile.id}`,
-              description: `Evaluate using the ${profile.id} profile. ${profile.description}`,
-              profileId: profile.id,
-            };
-          }),
-        ]),
-  ];
-
-  const decide = createDecisionService({ config, score });
+  const definitions = yield* createTools({ config, score, evaluate });
 
   yield* Effect.sync(() => {
     server.onclose = onClose;
@@ -100,7 +68,7 @@ export const runServer = Effect.fn("runServer")(function* ({
     server.setRequestHandler(ListToolsRequestSchema, () => {
       return runRequest(
         Effect.succeed({
-          tools: definitions.map(({ name, description }) => {
+          tools: definitions.map(({ name, description, inputSchema, outputSchema }) => {
             return {
               name,
               description,
@@ -130,10 +98,7 @@ export const runServer = Effect.fn("runServer")(function* ({
           });
 
           return definition
-            ? decide({
-                input: request.params.arguments,
-                profileId: definition.profileId,
-              })
+            ? definition.execute(request.params.arguments)
             : Effect.fail(new DecisionError({ message: "Unknown tool." }));
         }).pipe(
           Effect.map((result) => {

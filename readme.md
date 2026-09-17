@@ -1,6 +1,6 @@
 # decide-mcp
 
-A local MCP server that lets an agent delegate a decision to a configurable model. Send a decision, context, and choices; receive a recommended choice and percentages. The agent decides what to do next.
+A local MCP server that lets an agent delegate a decision to a configurable model. Send typed questions about shared context, or a decision with choices; receive structured judgments, probabilities, and separate provider confidence when available. The agent decides what to do next.
 
 Defaults to **TypeSafe AI Jev through AI Gateway**, using AI SDK 7's `experimental_evaluate`. Supports custom decision policies, multiple bias profiles, automatic profile routing, and individual tools per profile.
 
@@ -53,6 +53,64 @@ The server reads environment variables from its MCP process. It does not automat
 
 ## Tool contract
 
+Every configuration exposes `decide` and `evaluate`. The server supplies usage guidance during MCP initialization and in tool descriptions, so connected agents can discover when and how to use them.
+
+### General evaluation
+
+Call `evaluate` to ask independent Boolean, Choice, and Score questions in one request:
+
+```json
+{
+  "state": { "tests": "passing", "rollback": "not tested" },
+  "questions": {
+    "rollback-verified": {
+      "type": "boolean",
+      "instructions": "Does the evidence establish that rollback was successfully tested?"
+    },
+    "readiness": {
+      "type": "score",
+      "instructions": "Assess deployment readiness.",
+      "criteria": [
+        "Essential validation is missing.",
+        "Tests pass, but recovery is unverified.",
+        "Tests and recovery are verified."
+      ]
+    },
+    "next-step": {
+      "type": "choice",
+      "instructions": "Which next step best addresses the remaining uncertainty?",
+      "criteria": {
+        "test": "Exercise rollback before deploying.",
+        "deploy": "Deploy immediately.",
+        "unknown": "The evidence is insufficient to select a next step."
+      }
+    }
+  }
+}
+```
+
+`evaluate` accepts 1–64 questions and a total of 100,000 serialized characters. Choice questions accept 2–255 options; Score questions require 2–10 descriptive levels. Instructions and criteria accept text, JSON objects, or arrays; criteria may also be null. Boolean questions optionally accept `criteria.true` and `criteria.false`. This is one shared state evaluated against independent questions, not a batch of unrelated states. Questions cannot read sibling answers; dependent questions require a subsequent call. Provider token limits still apply.
+
+The response contains `answers` keyed by question ID and a parallel `metadata` map:
+
+- Boolean answers contain `type: "boolean"` and `probability`, meaning P(true). The direct TypeSafe adapter translates this to and from Noul.
+- Choice answers contain `choice` and `probabilities` when the provider supplies them.
+- Score answers contain `score` and `probabilities` when supplied; `metadata[id].levels` preserves the ordered rubric. The score ranges from zero to the last level index.
+- `metadata[id].source` distinguishes `provider-distribution`, `model-estimate`, and `unavailable`. `confidence` preserves TypeSafe's separate statistic, or is null. Boolean confidence is always null.
+- Top-level `model`, `provider`, `profile`, optional `usage` and `rounding`, and sanitized `warnings` describe the evaluation. Arbitrary provider metadata and raw responses are not exposed.
+
+An optional `profile` selects a configured policy and model explicitly. Omission or `"default"` uses the global policy without automatic routing, regardless of the `tools` setting. Available profiles and their purposes appear in the tool description. Unknown profiles fail before provider I/O.
+
+Evaluation mode submits all questions in one AI SDK evaluation call. Language mode uses one bounded `effect-agent` call with a concrete output schema for that batch, then validates answer coverage, types, distributions, winning choices, and weighted scores. Transport retries can make additional HTTP attempts. Missing native distributions are left absent; generated estimates must include valid distributions. Native rounding is retained without normalization.
+
+### Agent guidance
+
+Use Jev for focused evidence checks, classification, candidate selection, and rubric judgments. Write full instructions because question IDs are labels, not model context. Supply concrete level descriptions, keep independent dimensions separate, and include unknown options where useful. Keep calculations and extended reasoning in code or the calling agent. Results are advisory and never grant permission to act.
+
+The optional [companion skill source](docs/agent-skill.md) includes these patterns. To install it manually, copy that file to a `decide-mcp/SKILL.md` inside your agent's skills directory. The repository source uses a lowercase filename; the installed entrypoint uses the agent's required `SKILL.md` name. The MCP works without installing a skill or modifying a home `AGENTS.md`.
+
+### Single decision
+
 Call `decide`:
 
 ```json
@@ -98,7 +156,7 @@ Results are returned as both MCP `structuredContent` and JSON text for client co
 | `model-estimate`        | A language model's requested probability estimates, validated for coverage, range, and a sum of one. Not calibrated confidence. |
 | `unavailable`           | An evaluation model returned a choice without a distribution. Every percentage is `null`, with a warning.                       |
 
-Jev's separate confidence statistic is **not** a selected-choice probability and is not substituted for one. Rounded native distributions may sum to 99% or 101%; their values are preserved. Estimates are validated, not silently normalized. Tied estimates use input order as the tie-breaker.
+Jev's separate confidence statistic is **not** a selected-choice probability and is not substituted for one. `decide` now also returns it as `confidence` (null when unavailable); `evaluate` places it in per-question metadata. Rounded native distributions may sum to 99% or 101%; their values are preserved. Estimates are validated, not silently normalized. Tied estimates use input order as the tie-breaker.
 
 ## Decision policies and profiles
 
@@ -126,13 +184,13 @@ See [multiple-profiles.json](examples/multiple-profiles.json) for a complete Jev
 }
 ```
 
-| `tools`            | Exposed tools                                     | Behavior of `decide`                                                   |
-| ------------------ | ------------------------------------------------- | ---------------------------------------------------------------------- |
-| `routed` (default) | `decide`                                          | Chooses a profile, then evaluates the decision.                        |
-| `separate`         | `decide`, `decide-default`, `decide-<profile-id>` | Uses the default policy. The calling agent chooses a specialized tool. |
-| `both`             | All of the above                                  | Routes automatically; explicit tools bypass routing.                   |
+| `tools`            | Exposed tools                                                 | Behavior of `decide`                                                   |
+| ------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `routed` (default) | `decide`, `evaluate`                                          | Chooses a profile, then evaluates the decision.                        |
+| `separate`         | `decide`, `evaluate`, `decide-default`, `decide-<profile-id>` | Uses the default policy. The calling agent chooses a specialized tool. |
+| `both`             | All of the above                                              | Routes automatically; explicit tools bypass routing.                   |
 
-With no profiles, `decide` makes one model call. With profiles and routing enabled, it makes two: one to select a profile from its description, one to evaluate with that policy. Explicit tools always make one call. Profiles do not vote or blend scores.
+With no profiles, `decide` makes one model call. With profiles and routing enabled, it makes two: one to select a profile from its description, one to evaluate with that policy. Explicit tools always make one call. Profiles do not vote or blend scores. The `evaluate` tool is available in every mode and never automatically routes.
 
 This is a **two-stage decision tree**. A single router keeps latency bounded and makes policy selection observable. Recursive trees are not implemented. If profiles become numerous enough to need a hierarchy, that can be added as an explicit configuration structure.
 

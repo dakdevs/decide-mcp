@@ -50,6 +50,7 @@ describe("probability integrity", () => {
 
     expect(await Effect.runPromise(score(args))).toMatchObject({
       selectedChoice: "ship",
+      confidence: 0.99,
       choices: [
         { id: "ship", percentage: 73 },
         { id: "wait", percentage: 27 },

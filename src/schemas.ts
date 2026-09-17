@@ -48,6 +48,9 @@ const percentageSource = Schema.Literals([
   "unavailable",
 ]);
 export const scoreSchema = Schema.Struct({
+  confidence: Schema.optionalKey(
+    Schema.NullOr(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  ),
   selectedChoice: Schema.String,
   choices: Schema.Array(
     Schema.Struct({

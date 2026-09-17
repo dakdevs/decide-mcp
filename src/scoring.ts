@@ -1,6 +1,6 @@
-import { experimental_evaluate as evaluate } from "ai";
 import { Effect } from "effect";
-import { DecisionError, ProviderError } from "./errors";
+import { DecisionError } from "./errors";
+import { evaluateNative, nativeConfidence } from "./native-evaluation";
 import { runLanguageAgent } from "./language-agent";
 import type { Config, ModelConfig } from "./config";
 import type { ModelResolver } from "./providers";
@@ -88,38 +88,40 @@ export function createScorer({
 
     let responseModel = model.model;
 
+    let confidence: number | null = null;
+
     const warnings: string[] = [];
 
     if (resolved.mode === "evaluation") {
-      const result = yield* Effect.tryPromise({
-        try: (signal) => {
-          return evaluate({
-            model: resolved.model,
-            state: input,
-            questions: {
-              decision: {
-                type: "choice",
-                instructions: `${policy}\n\nAnswer the decision in the shared state.`,
-                criteria: Object.fromEntries(
-                  input.choices.map((choice) => {
-                    return [choice.id, choice.description];
-                  }),
-                ),
-              },
-            },
-            abortSignal: signal,
-            maxRetries: config.maxRetries,
-            providerOptions: model.providerOptions,
-          });
-        },
-        catch: () => {
-          return new ProviderError({ message: "Evaluation provider request failed." });
+      const result = yield* evaluateNative({
+        model: resolved.model,
+        modelConfig: model,
+        config,
+        state: input,
+        questions: {
+          decision: {
+            type: "choice",
+            instructions: `${policy}\n\nAnswer the decision in the shared state.`,
+            criteria: Object.fromEntries(
+              input.choices.map((choice) => {
+                return [choice.id, choice.description];
+              }),
+            ),
+          },
         },
       });
 
-      selectedChoice = result.answers.decision.choice;
+      const answer = result.answers.decision;
 
-      probabilities = result.answers.decision.probabilities;
+      if (answer?.type !== "choice") {
+        return yield* new DecisionError({ message: "Invalid decision answer." });
+      }
+
+      confidence = nativeConfidence({ metadata: result.providerMetadata, id: "decision" });
+
+      selectedChoice = answer.choice;
+
+      probabilities = answer.probabilities;
 
       percentageSource = probabilities ? "provider-distribution" : "unavailable";
 
@@ -168,7 +170,8 @@ export function createScorer({
       }
     }
 
-    return {
+    const result: Score = {
+      confidence,
       selectedChoice,
       choices: input.choices.map((choice) => {
         return {
@@ -181,6 +184,8 @@ export function createScorer({
       provider: model.provider,
       warnings,
     };
+
+    return result;
   });
 }
 
