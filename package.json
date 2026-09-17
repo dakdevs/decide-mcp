@@ -6,9 +6,11 @@
     "@ai-sdk/openai": "4.0.69",
     "@ai-sdk/openai-compatible": "3.0.51",
     "@ai-sdk/typesafe-ai": "3.0.2",
+    "@effect/platform-node": "4.0.0-rc.115",
     "@modelcontextprotocol/sdk": "1.30.0",
     "ai": "7.0.105",
-    "zod": "4.6.5"
+    "effect": "4.0.0-rc.115",
+    "effect-agent": "0.1.0-beta.103"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -32,7 +34,7 @@
     "license.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "dev": "bun run src/cli.ts",

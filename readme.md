@@ -6,7 +6,7 @@ Defaults to **TypeSafe AI Jev through AI Gateway**, using AI SDK 7's `experiment
 
 ## Install
 
-Requires Node.js 22+. Add this to an MCP client that supports stdio:
+Requires Node.js 22.19+. Add this to an MCP client that supports stdio:
 
 ```json
 {
@@ -24,7 +24,7 @@ Or install globally with `npm install -g decide-mcp` and use `decide-mcp` as the
 
 ## Develop locally
 
-Requires Bun for development and Node.js 22+ to run the built server.
+Requires Bun for development and Node.js 22.19+ to run the built server.
 
 ```sh
 bun install --frozen-lockfile
@@ -185,6 +185,12 @@ The factory must return an AI SDK provider with `languageModel(id)` or `evaluati
 
 ## Runtime and verification
 
+The server uses functional Effect v4 for configuration decoding, provider resolution, decision scoring, shared request deadlines, and MCP request and transport lifetimes. Domain schemas use Effect Schema; typed failures stay in the Effect error channel. Promises are confined to AI SDK, custom-provider, and MCP transport integration boundaries. A scoped Effect FiberSet owns MCP request fibers and interrupts them during shutdown. The MCP TypeScript SDK remains the wire adapter: Effect rc.115's native MCP server converts numeric cancellation IDs to strings, so it cannot cancel numeric-ID requests from SDK clients. An E2E regression verifies cancellation through the retained adapter.
+
+Language-mode scoring runs a tool-free `effect-agent` agent with a schema-validated output, one model turn, and a fresh in-memory history scope per call. An application-specific Effect language-model adapter keeps all existing AI SDK providers, credential settings, structured output, and retry behavior. The adapter buffers the structured response before exposing it as Effect stream parts. Native Jev evaluation continues to use `experimental_evaluate`, preserving provider distributions rather than converting them into generated estimates.
+
+This migration pins `effect` and `@effect/platform-node` to `4.0.0-rc.115` and `effect-agent` to `0.1.0-beta.103`. These are prereleases. Node.js 22.19 or newer is required by the platform dependency. As of September 17, 2026, the newest published `effect-agent` release is on the `beta` tag; its peer dependency requires this Effect v4 release candidate. The npm `latest` tag still points to the older `0.0.1-beta.3`, so use the pinned versions and lockfile when developing.
+
 `timeoutMs` defaults to 30,000 and covers routing, retries, and evaluation together. `maxRetries` defaults to 2 for transient provider failures. Client cancellation propagates to provider requests. Invalid inputs fail before model calls. Provider failures and invalid model output return an MCP tool error with no recommendation; raw provider exception details are not returned because they may contain sensitive request data.
 
 Each request is independent. There is no conversation memory, persistence, action execution, or cross-request policy mutation. Decision data is sent to the configured provider. Configured prompts guide model behavior; they are not a security boundary against prompt injection.
@@ -198,7 +204,7 @@ bun test
 bun run test:e2e
 ```
 
-Unit tests cover schemas, scoring semantics, routing thresholds, cancellation, and custom factories. E2E tests launch the built Node CLI through the actual MCP stdio client and use local HTTP provider fixtures with real AI SDK adapters. They cover native TypeSafe/Gateway transport, language estimates, tool discovery, routing, validation, timeout, malformed responses, and error redaction. A package test packs the release, installs it in a temporary directory using npm, and verifies its executable and MCP handshake without relying on workspace dependencies. That test needs npm registry access. These checks do not establish real model quality or live provider access; live calls require an operator-provided API key.
+Unit tests cover schemas, scoring semantics, routing thresholds, provider interruption, a shared deadline using Effect TestClock, concurrent language-agent isolation, bounded agent execution, and custom factories. E2E tests launch the built Node CLI through the actual MCP stdio client and use local HTTP provider fixtures with real AI SDK adapters. They cover native TypeSafe/Gateway transport, language estimates, tool discovery, routing, validation, timeout, client cancellation, malformed responses, startup failures, and error redaction. A package test packs the release, installs it in a temporary directory using npm, and verifies its executable and MCP handshake without relying on workspace dependencies. That test needs npm registry access. These checks do not establish real model quality or live provider access; live calls require an operator-provided API key.
 
 ## Release
 
@@ -212,4 +218,6 @@ Licensed under the [MIT license](license.md).
 - [AI SDK provider management](https://ai-sdk.dev/docs/ai-sdk-core/provider-management)
 - [Jev on AI Gateway](https://vercel.com/ai-gateway/models/jev)
 - [TypeSafe AI SDK](https://github.com/typesafe-ai/typesafe-sdk-js)
+- [Effect v4 documentation](https://effect.website/v4/)
+- [effect-agent](https://github.com/danieljvdm/effect-agent)
 - [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x)

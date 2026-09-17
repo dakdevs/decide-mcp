@@ -1,84 +1,149 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { Cause, Deferred, Effect, FiberSet, Schema } from "effect";
+import { McpSchema, Tool } from "effect/unstable/ai";
 import type { Config } from "./config.js";
 import { createDecisionService } from "./decision-service.js";
+import {
+  ConfigError,
+  DecisionError,
+  decisionFailureMessage,
+} from "./errors.js";
 import { decisionSchema, resultSchema } from "./schemas.js";
 import type { Scorer } from "./scoring.js";
 
-export function createServer({
+// Keep the SDK only at the wire boundary. Effect rc.115's native MCP server
+// stringifies numeric cancellation IDs, preventing it from interrupting SDK clients.
+// A scoped FiberSet owns every callback fiber, including shutdown interruption.
+export const runServer = Effect.fn("runServer")(function* ({
   config,
   score,
 }: {
   config: Config;
   score: Scorer;
 }) {
-  const server = new McpServer({ name: "decide-mcp", version: "0.1.0" });
-  const decide = createDecisionService({ config, score });
-  const register = ({
-    name,
-    description,
-    profileId,
-  }: {
+  const runRequest = yield* FiberSet.makeRuntimePromise();
+  const closed = yield* Deferred.make<void>();
+  const onClose = () => {
+    Deferred.doneUnsafe(closed, Effect.void);
+  };
+  // The SDK transport does not emit onclose for stdin EOF. Release the scope
+  // on EOF as well, so disconnected clients do not leave provider fibers alive.
+  yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      process.stdin.once("end", onClose);
+      if (process.stdin.readableEnded) onClose();
+    }),
+    () =>
+      Effect.sync(() => {
+        process.stdin.off("end", onClose);
+      }),
+  );
+  const server = yield* Effect.acquireRelease(
+    Effect.sync(
+      () =>
+        new Server(
+          { name: "decide-mcp", version: "0.1.0" },
+          { capabilities: { tools: {} } },
+        ),
+    ),
+    (server) => Effect.promise(() => server.close()).pipe(Effect.ignoreCause),
+  );
+  const inputSchema = yield* Schema.decodeUnknownEffect(
+    McpSchema.ToolJsonSchema,
+  )(Tool.getJsonSchemaFromSchema(decisionSchema));
+  const outputSchema = yield* Schema.decodeUnknownEffect(
+    McpSchema.ToolJsonSchema,
+  )(Tool.getJsonSchemaFromSchema(resultSchema));
+  const definitions: ReadonlyArray<{
     name: string;
     description: string;
     profileId?: string;
-  }) => {
-    server.registerTool(
-      name,
-      {
-        description,
-        inputSchema: decisionSchema,
-        outputSchema: resultSchema,
-        annotations: {
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: false,
-          openWorldHint: true,
-        },
-      },
-      async (input, extra) => {
-        try {
-          const result = await decide({
-            input,
-            profileId,
-            signal: extra.signal,
-          });
-          return {
-            content: [{ type: "text", text: JSON.stringify(result) }],
-            structuredContent: result,
-          };
-        } catch {
-          // Provider exceptions can include request data, authorization headers, or response bodies.
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: "Decision failed: check provider credentials, model capability, configuration, and timeout. No recommendation was produced.",
-              },
-            ],
-          };
-        }
-      },
-    );
-  };
-  register({
-    name: "decide",
-    description:
-      "Evaluate a decision, context, and choices. Returns a recommendation and percentages with their source. Automatically selects a configured bias profile when routing is enabled. Percentages are not guarantees. The calling agent retains responsibility for acting.",
-  });
-  if (config.tools !== "routed") {
-    register({
-      name: "decide-default",
+  }> = [
+    {
+      name: "decide",
       description:
-        "Evaluate with only the default policy, bypassing automatic profile selection.",
-      profileId: "default",
-    });
-    for (const profile of config.profiles)
-      register({
-        name: `decide-${profile.id}`,
-        description: `Evaluate using the ${profile.id} profile. ${profile.description}`,
-        profileId: profile.id,
-      });
-  }
-  return server;
-}
+        "Evaluate a decision, context, and choices. Returns a recommendation and percentages with their source. Automatically selects a configured bias profile when routing is enabled. Percentages are not guarantees. The calling agent retains responsibility for acting.",
+    },
+    ...(config.tools === "routed"
+      ? []
+      : [
+          {
+            name: "decide-default",
+            description:
+              "Evaluate with only the default policy, bypassing automatic profile selection.",
+            profileId: "default",
+          },
+          ...config.profiles.map((profile) => ({
+            name: `decide-${profile.id}`,
+            description: `Evaluate using the ${profile.id} profile. ${profile.description}`,
+            profileId: profile.id,
+          })),
+        ]),
+  ];
+  const decide = createDecisionService({ config, score });
+  yield* Effect.sync(() => {
+    server.onclose = onClose;
+    server.setRequestHandler(ListToolsRequestSchema, () =>
+      runRequest(
+        Effect.succeed({
+          tools: definitions.map(({ name, description }) => ({
+            name,
+            description,
+            inputSchema,
+            outputSchema,
+            annotations: {
+              readOnlyHint: true,
+              destructiveHint: false,
+              idempotentHint: false,
+              openWorldHint: true,
+            },
+          })),
+        }),
+      ),
+    );
+    server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
+      runRequest(
+        Effect.suspend(() => {
+          if (extra.signal.aborted) return Effect.interrupt;
+          const definition = definitions.find(
+            (tool) => tool.name === request.params.name,
+          );
+          return definition
+            ? decide({
+                input: request.params.arguments,
+                profileId: definition.profileId,
+              })
+            : Effect.fail(new DecisionError({ message: "Unknown tool." }));
+        }).pipe(
+          Effect.map((result) => ({
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            structuredContent: result,
+          })),
+          // Never log or return provider causes, which can contain credentials or context.
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.succeed({
+                  isError: true,
+                  content: [
+                    { type: "text" as const, text: decisionFailureMessage },
+                  ],
+                }),
+          ),
+        ),
+        { signal: extra.signal },
+      ),
+    );
+  });
+  yield* Effect.tryPromise({
+    try: () => server.connect(new StdioServerTransport()),
+    catch: () =>
+      new ConfigError({ message: "Could not connect MCP stdio transport." }),
+  });
+  yield* Deferred.await(closed);
+});
