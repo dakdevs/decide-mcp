@@ -1,139 +1,172 @@
-import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { z } from "zod";
+import { Effect, FileSystem, Schema } from "effect";
+import { ConfigError } from "./errors";
 
-const text = z.string().trim().min(1);
-const identifier = text.max(48).regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
-const modelSchema = z.strictObject({
-  provider: text.default("gateway"),
+const text = Schema.Trim.check(Schema.isMinLength(1));
+const identifier = text.check(
+  Schema.isMaxLength(48),
+  Schema.isPattern(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/),
+);
+const modelSchema = Schema.Struct({
+  provider: text.pipe(Schema.withDecodingDefaultKey(Effect.succeed("gateway"))),
   model: text,
-  mode: z.enum(["evaluation", "language"]).default("evaluation"),
-  providerOptions: z
-    .record(z.string(), z.record(z.string(), z.json()))
-    .optional(),
+  mode: Schema.Literals(["evaluation", "language"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("evaluation" as const)),
+  ),
+  providerOptions: Schema.optionalKey(Schema.Record(Schema.String, Schema.JsonObject)),
 });
-
-export const providerSchema = z
-  .strictObject({
-    kind: z.enum([
-      "gateway",
-      "typesafe",
-      "openai",
-      "anthropic",
-      "google",
-      "openai-compatible",
-      "custom",
-    ]),
-    apiKeyEnv: text.optional(),
-    baseURL: z.url().optional(),
-    module: text.optional(),
-    export: text.optional(),
-    options: z.record(z.string(), z.json()).optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (value.kind === "openai-compatible" && !value.baseURL)
-      ctx.addIssue({
-        code: "custom",
-        message: "openai-compatible requires baseURL",
-      });
-    if (value.kind === "custom" && (!value.module || !value.export))
-      ctx.addIssue({
-        code: "custom",
-        message: "custom requires module and export (a provider factory)",
-      });
-    if (
-      value.kind !== "custom" &&
-      (value.module || value.export || value.options)
-    )
-      ctx.addIssue({
-        code: "custom",
-        message:
-          "module, export, and options are only supported for custom providers",
-      });
-  });
-
-export const configSchema = z
-  .strictObject({
-    model: modelSchema.default({
-      provider: "gateway",
-      model: "typesafe-ai/jev",
-      mode: "evaluation",
-    }),
-    systemPrompt: text
-      .max(16000)
-      .default(
-        "Choose the option best supported by the supplied context. Consider uncertainty and tradeoffs.",
-      ),
-    providers: z
-      .record(identifier, providerSchema)
-      .default({ gateway: { kind: "gateway" } }),
-    profiles: z
-      .array(
-        z.strictObject({
-          id: identifier.refine(
-            (id) => id !== "default",
-            "default is reserved",
-          ),
-          description: text.max(2000),
-          systemPrompt: text.max(16000),
-          model: modelSchema.optional(),
-        }),
-      )
-      .max(32)
-      .default([]),
-    tools: z.enum(["routed", "separate", "both"]).default("routed"),
-    router: z
-      .strictObject({
-        model: modelSchema.optional(),
-        systemPrompt: text
-          .max(16000)
-          .default(
-            "Select the most relevant decision profile based on its purpose. Use default when no specialized profile clearly applies. Do not select a profile just to obtain a desired answer.",
-          ),
-        minimumProbability: z.number().min(0).max(1).default(0),
-      })
-      .default({
-        systemPrompt:
-          "Select the most relevant decision profile based on its purpose. Use default when no specialized profile clearly applies. Do not select a profile just to obtain a desired answer.",
-        minimumProbability: 0,
+export const providerSchema = Schema.Struct({
+  kind: Schema.Literals([
+    "gateway",
+    "typesafe",
+    "openai",
+    "anthropic",
+    "google",
+    "openai-compatible",
+    "custom",
+  ]),
+  apiKeyEnv: Schema.optionalKey(text),
+  baseURL: Schema.optionalKey(
+    Schema.String.check(
+      Schema.makeFilter((value) => {
+        return URL.canParse(value) || "Invalid URL";
       }),
-    timeoutMs: z.number().int().min(1).max(300000).default(30000),
-    maxRetries: z.number().int().min(0).max(5).default(2),
-  })
-  .superRefine((config, ctx) => {
-    const ids = config.profiles.map((profile) => profile.id);
-    if (new Set(ids).size !== ids.length)
-      ctx.addIssue({ code: "custom", message: "Profile IDs must be unique" });
+    ),
+  ),
+  module: Schema.optionalKey(text),
+  export: Schema.optionalKey(text),
+  options: Schema.optionalKey(Schema.JsonObject),
+}).check(
+  Schema.makeFilter((value) => {
+    if (value.kind === "openai-compatible" && !value.baseURL) {
+      return "openai-compatible requires baseURL";
+    }
+
+    if (value.kind === "custom" && (!value.module || !value.export)) {
+      return "custom requires module and export (a provider factory)";
+    }
+
+    if (value.kind !== "custom" && (value.module || value.export || value.options)) {
+      return "module, export, and options are only supported for custom providers";
+    }
+
+    return true;
+  }),
+);
+const routerPrompt =
+  "Select the most relevant decision profile based on its purpose. Use default when no specialized profile clearly applies. Do not select a profile just to obtain a desired answer.";
+export const configSchema = Schema.Struct({
+  model: modelSchema.pipe(
+    Schema.withDecodingDefaultKey(
+      Effect.succeed({
+        provider: "gateway",
+        model: "typesafe-ai/jev",
+        mode: "evaluation" as const,
+      }),
+    ),
+  ),
+  systemPrompt: text
+    .check(Schema.isMaxLength(16000))
+    .pipe(
+      Schema.withDecodingDefaultKey(
+        Effect.succeed(
+          "Choose the option best supported by the supplied context. Consider uncertainty and tradeoffs.",
+        ),
+      ),
+    ),
+  providers: Schema.Record(identifier, providerSchema).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed({ gateway: { kind: "gateway" as const } })),
+  ),
+  profiles: Schema.Array(
+    Schema.Struct({
+      id: identifier.check(
+        Schema.makeFilter((id) => {
+          return id !== "default" || "default is reserved";
+        }),
+      ),
+      description: text.check(Schema.isMaxLength(2000)),
+      systemPrompt: text.check(Schema.isMaxLength(16000)),
+      model: Schema.optionalKey(modelSchema),
+    }),
+  )
+    .check(Schema.isMaxLength(32))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  tools: Schema.Literals(["routed", "separate", "both"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("routed" as const)),
+  ),
+  router: Schema.Struct({
+    model: Schema.optionalKey(modelSchema),
+    systemPrompt: text
+      .check(Schema.isMaxLength(16000))
+      .pipe(Schema.withDecodingDefaultKey(Effect.succeed(routerPrompt))),
+    minimumProbability: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    ),
+  }).pipe(
+    Schema.withDecodingDefaultKey(
+      Effect.succeed({ systemPrompt: routerPrompt, minimumProbability: 0 }),
+    ),
+  ),
+  timeoutMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 300000 })).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(30000)),
+  ),
+  maxRetries: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5 })).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(2)),
+  ),
+}).check(
+  Schema.makeFilter((config) => {
+    const ids = config.profiles.map((profile) => {
+      return profile.id;
+    });
+
+    if (new Set(ids).size !== ids.length) {
+      return "Profile IDs must be unique";
+    }
+
     for (const model of [
       config.model,
       config.router.model,
-      ...config.profiles.map((p) => p.model),
+      ...config.profiles.map((profile) => {
+        return profile.model;
+      }),
     ]) {
-      if (model && !Object.hasOwn(config.providers, model.provider))
-        ctx.addIssue({
-          code: "custom",
-          message: `Unknown provider: ${model.provider}`,
-        });
+      if (model && !Object.hasOwn(config.providers, model.provider)) {
+        return `Unknown provider: ${model.provider}`;
+      }
     }
-  });
 
-export type Config = z.infer<typeof configSchema>;
-export type ModelConfig = z.infer<typeof modelSchema>;
-
-export async function loadConfig({
+    return true;
+  }),
+);
+export type Config = typeof configSchema.Type;
+export type ModelConfig = typeof modelSchema.Type;
+export const loadConfig = Effect.fn("loadConfig")(function* ({
   path,
   json,
 }: {
   path?: string;
   json?: string;
 }) {
-  if (path && json)
-    throw new Error(
-      "Use either --config / DECIDE_CONFIG or DECIDE_CONFIG_JSON, not both.",
-    );
-  const contents = path ? await readFile(resolve(path), "utf8") : json;
+  if (path && json) {
+    return yield* new ConfigError({
+      message: "Use either --config / DECIDE_CONFIG or DECIDE_CONFIG_JSON, not both.",
+    });
+  }
+
+  const contents = path
+    ? yield* (yield* FileSystem.FileSystem).readFileString(resolve(path))
+    : json;
+
+  const raw = contents
+    ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(contents)
+    : {};
+
+  const config = yield* Schema.decodeUnknownEffect(configSchema, {
+    onExcessProperty: "error",
+  })(raw);
+
   return {
-    config: configSchema.parse(contents ? JSON.parse(contents) : {}),
+    config,
     baseDirectory: path ? dirname(resolve(path)) : process.cwd(),
   };
-}
+});

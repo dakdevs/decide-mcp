@@ -8,105 +8,167 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Experimental_EvaluationModel, LanguageModel } from "ai";
-import type { Config, ModelConfig } from "./config.js";
+import { Effect } from "effect";
+import type { Config, ModelConfig } from "./config";
+import { ProviderError } from "./errors";
 
 type Provider = {
   evaluationModel?: (id: string) => Experimental_EvaluationModel;
   languageModel?: (id: string) => LanguageModel;
 };
 
-export async function createModelResolver({
+const createProvider = Effect.fn("createProvider")(function* ({
+  name,
+  definition,
+  baseDirectory,
+}: {
+  name: string;
+  definition: Config["providers"][string];
+  baseDirectory: string;
+}) {
+  const apiKey = definition.apiKeyEnv ? process.env[definition.apiKeyEnv] : undefined;
+
+  if (definition.apiKeyEnv && !apiKey) {
+    return yield* new ProviderError({
+      message: `Missing environment variable: ${definition.apiKeyEnv}`,
+    });
+  }
+
+  const settings = { apiKey, baseURL: definition.baseURL };
+
+  const failure = () => {
+    return new ProviderError({
+      message: `Provider ${name}: initialization failed. Check factory and settings.`,
+    });
+  };
+
+  if (definition.kind !== "custom") {
+    return yield* Effect.try({
+      try: (): Provider => {
+        switch (definition.kind) {
+          case "gateway":
+            return createGateway(settings);
+          case "typesafe":
+            return createTypeSafeAi(settings);
+          case "openai":
+            return createOpenAI(settings);
+          case "anthropic":
+            return createAnthropic(settings);
+          case "google":
+            return createGoogleGenerativeAI(settings);
+          case "openai-compatible":
+            return createOpenAICompatible({
+              ...settings,
+              name,
+              baseURL: definition.baseURL!,
+            });
+          default:
+            throw new Error("Expected built-in provider");
+        }
+      },
+      catch: failure,
+    });
+  }
+
+  const moduleUrl = yield* Effect.try({
+    try: () => {
+      const specifier = definition.module!;
+
+      const require = createRequire(resolve(baseDirectory, "package.json"));
+
+      return pathToFileURL(
+        specifier.startsWith(".") || specifier.startsWith("/")
+          ? resolve(baseDirectory, specifier)
+          : require.resolve(specifier),
+      ).href;
+    },
+    catch: failure,
+  });
+
+  const imported: Record<string, unknown> = yield* Effect.tryPromise({
+    try: () => {
+      return import(moduleUrl);
+    },
+    catch: failure,
+  });
+
+  const factory = imported[definition.export!];
+
+  if (typeof factory !== "function") {
+    return yield* failure();
+  }
+
+  const provider: Provider = yield* Effect.tryPromise({
+    try: () => {
+      return Promise.resolve(
+        factory({
+          ...definition.options,
+          ...Object.fromEntries(
+            Object.entries(settings).filter(([, value]) => {
+              return value !== undefined;
+            }),
+          ),
+        }),
+      );
+    },
+    catch: failure,
+  });
+
+  if (!provider || (typeof provider !== "object" && typeof provider !== "function")) {
+    return yield* failure();
+  }
+
+  return provider;
+});
+
+export const createModelResolver = Effect.fn("createModelResolver")(function* ({
   config,
   baseDirectory,
 }: {
   config: Config;
   baseDirectory: string;
 }) {
-  const providers = new Map<string, Provider>();
-  for (const [name, definition] of Object.entries(config.providers)) {
-    const apiKey = definition.apiKeyEnv
-      ? process.env[definition.apiKeyEnv]
-      : undefined;
-    if (definition.apiKeyEnv && !apiKey)
-      throw new Error(`Missing environment variable: ${definition.apiKeyEnv}`);
-    const settings = { apiKey, baseURL: definition.baseURL };
-    let provider: Provider;
-    switch (definition.kind) {
-      case "gateway":
-        provider = createGateway(settings);
-        break;
-      case "typesafe":
-        provider = createTypeSafeAi(settings);
-        break;
-      case "openai":
-        provider = createOpenAI(settings);
-        break;
-      case "anthropic":
-        provider = createAnthropic(settings);
-        break;
-      case "google":
-        provider = createGoogleGenerativeAI(settings);
-        break;
-      case "openai-compatible":
-        provider = createOpenAICompatible({
-          ...settings,
-          name,
-          baseURL: definition.baseURL!,
-        });
-        break;
-      case "custom": {
-        const specifier = definition.module!;
-        const require = createRequire(resolve(baseDirectory, "package.json"));
-        const modulePath =
-          specifier.startsWith(".") || specifier.startsWith("/")
-            ? resolve(baseDirectory, specifier)
-            : require.resolve(specifier);
-        const imported: Record<string, unknown> = await import(
-          pathToFileURL(modulePath).href
-        );
-        const factory = imported[definition.export!];
-        if (typeof factory !== "function")
-          throw new Error(
-            `Provider ${name}: export must be a factory function.`,
-          );
-        provider = await factory({
-          ...definition.options,
-          ...Object.fromEntries(
-            Object.entries(settings).filter(([, value]) => value !== undefined),
-          ),
-        });
-        if (
-          !provider ||
-          (typeof provider !== "object" && typeof provider !== "function")
-        )
-          throw new Error(
-            `Provider ${name}: factory did not return a provider.`,
-          );
-      }
-    }
-    providers.set(name, provider);
-  }
-  return (model: ModelConfig) => {
-    const provider = providers.get(model.provider);
-    if (model.mode === "evaluation") {
-      if (typeof provider?.evaluationModel !== "function")
-        throw new Error(
-          `Provider ${model.provider} does not support evaluation mode. Configure language mode for structured-output models.`,
-        );
-      return {
-        mode: "evaluation" as const,
-        model: provider.evaluationModel(model.model),
-      };
-    }
-    if (typeof provider?.languageModel !== "function")
-      throw new Error(
-        `Provider ${model.provider} does not support language mode.`,
-      );
-    return {
-      mode: "language" as const,
-      model: provider.languageModel(model.model),
-    };
-  };
-}
+  const entries = yield* Effect.forEach(Object.entries(config.providers), ([name, definition]) => {
+    return createProvider({ name, definition, baseDirectory }).pipe(
+      Effect.map((provider) => {
+        return [name, provider] as const;
+      }),
+    );
+  });
 
-export type ModelResolver = Awaited<ReturnType<typeof createModelResolver>>;
+  const providers = new Map(entries);
+
+  return (model: ModelConfig) => {
+    return Effect.try({
+      try: () => {
+        const provider = providers.get(model.provider);
+
+        if (model.mode === "evaluation") {
+          if (typeof provider?.evaluationModel !== "function") {
+            throw new Error("Evaluation mode unavailable");
+          }
+
+          return {
+            mode: "evaluation" as const,
+            model: provider.evaluationModel(model.model),
+          };
+        }
+
+        if (typeof provider?.languageModel !== "function") {
+          throw new Error("Language mode unavailable");
+        }
+
+        return {
+          mode: "language" as const,
+          model: provider.languageModel(model.model),
+        };
+      },
+      catch: () => {
+        return new ProviderError({
+          message: `Provider ${model.provider} does not support ${model.mode} mode or model.`,
+        });
+      },
+    });
+  };
+});
+export type ModelResolver = Effect.Success<ReturnType<typeof createModelResolver>>;

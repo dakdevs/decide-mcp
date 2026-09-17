@@ -1,12 +1,12 @@
 # decide-mcp
 
-A local MCP server that lets an agent delegate a decision to a configurable model. Send a decision, context, and choices; receive a recommended choice and percentages. The agent decides what to do next.
+A local MCP server that lets an agent delegate a decision to a configurable model. Send typed questions about shared context, or a decision with choices; receive structured judgments, probabilities, and separate provider confidence when available. The agent decides what to do next.
 
 Defaults to **TypeSafe AI Jev through AI Gateway**, using AI SDK 7's `experimental_evaluate`. Supports custom decision policies, multiple bias profiles, automatic profile routing, and individual tools per profile.
 
 ## Install
 
-Requires Node.js 22+. Add this to an MCP client that supports stdio:
+Requires Node.js 22.19+. Add this to an MCP client that supports stdio:
 
 ```json
 {
@@ -24,7 +24,7 @@ Or install globally with `npm install -g decide-mcp` and use `decide-mcp` as the
 
 ## Develop locally
 
-Requires Bun for development and Node.js 22+ to run the built server.
+Requires Bun for development and Node.js 22.19+ to run the built server.
 
 ```sh
 bun install --frozen-lockfile
@@ -52,6 +52,64 @@ For configuration, add `"--config", "/absolute/path/decide.config.json"` to `arg
 The server reads environment variables from its MCP process. It does not automatically load `.env` files. Credentials stay in environment variables; configuration uses names such as `apiKeyEnv` rather than secret values.
 
 ## Tool contract
+
+Every configuration exposes `decide` and `evaluate`. The server supplies usage guidance during MCP initialization and in tool descriptions, so connected agents can discover when and how to use them.
+
+### General evaluation
+
+Call `evaluate` to ask independent Boolean, Choice, and Score questions in one request:
+
+```json
+{
+  "state": { "tests": "passing", "rollback": "not tested" },
+  "questions": {
+    "rollback-verified": {
+      "type": "boolean",
+      "instructions": "Does the evidence establish that rollback was successfully tested?"
+    },
+    "readiness": {
+      "type": "score",
+      "instructions": "Assess deployment readiness.",
+      "criteria": [
+        "Essential validation is missing.",
+        "Tests pass, but recovery is unverified.",
+        "Tests and recovery are verified."
+      ]
+    },
+    "next-step": {
+      "type": "choice",
+      "instructions": "Which next step best addresses the remaining uncertainty?",
+      "criteria": {
+        "test": "Exercise rollback before deploying.",
+        "deploy": "Deploy immediately.",
+        "unknown": "The evidence is insufficient to select a next step."
+      }
+    }
+  }
+}
+```
+
+`evaluate` accepts 1–64 questions and a total of 100,000 serialized characters. Choice questions accept 2–255 options; Score questions require 2–10 descriptive levels. Instructions and criteria accept text, JSON objects, or arrays; criteria may also be null. Boolean questions optionally accept `criteria.true` and `criteria.false`. This is one shared state evaluated against independent questions, not a batch of unrelated states. Questions cannot read sibling answers; dependent questions require a subsequent call. Provider token limits still apply.
+
+The response contains `answers` keyed by question ID and a parallel `metadata` map:
+
+- Boolean answers contain `type: "boolean"` and `probability`, meaning P(true). The direct TypeSafe adapter translates this to and from Noul.
+- Choice answers contain `choice` and `probabilities` when the provider supplies them.
+- Score answers contain `score` and `probabilities` when supplied; `metadata[id].levels` preserves the ordered rubric. The score ranges from zero to the last level index.
+- `metadata[id].source` distinguishes `provider-distribution`, `model-estimate`, and `unavailable`. `confidence` preserves TypeSafe's separate statistic, or is null. Boolean confidence is always null.
+- Top-level `model`, `provider`, `profile`, optional `usage` and `rounding`, and sanitized `warnings` describe the evaluation. Arbitrary provider metadata and raw responses are not exposed.
+
+An optional `profile` selects a configured policy and model explicitly. Omission or `"default"` uses the global policy without automatic routing, regardless of the `tools` setting. Available profiles and their purposes appear in the tool description. Unknown profiles fail before provider I/O.
+
+Evaluation mode submits all questions in one AI SDK evaluation call. Language mode uses one bounded `effect-agent` call with a concrete output schema for that batch, then validates answer coverage, types, distributions, winning choices, and weighted scores. Transport retries can make additional HTTP attempts. Missing native distributions are left absent; generated estimates must include valid distributions. Native rounding is retained without normalization.
+
+### Agent guidance
+
+Use Jev for focused evidence checks, classification, candidate selection, and rubric judgments. Write full instructions because question IDs are labels, not model context. Supply concrete level descriptions, keep independent dimensions separate, and include unknown options where useful. Keep calculations and extended reasoning in code or the calling agent. Results are advisory and never grant permission to act.
+
+The optional [companion skill source](docs/agent-skill.md) includes these patterns. To install it manually, copy that file to a `decide-mcp/SKILL.md` inside your agent's skills directory. The repository source uses a lowercase filename; the installed entrypoint uses the agent's required `SKILL.md` name. The MCP works without installing a skill or modifying a home `AGENTS.md`.
+
+### Single decision
 
 Call `decide`:
 
@@ -98,7 +156,7 @@ Results are returned as both MCP `structuredContent` and JSON text for client co
 | `model-estimate`        | A language model's requested probability estimates, validated for coverage, range, and a sum of one. Not calibrated confidence. |
 | `unavailable`           | An evaluation model returned a choice without a distribution. Every percentage is `null`, with a warning.                       |
 
-Jev's separate confidence statistic is **not** a selected-choice probability and is not substituted for one. Rounded native distributions may sum to 99% or 101%; their values are preserved. Estimates are validated, not silently normalized. Tied estimates use input order as the tie-breaker.
+Jev's separate confidence statistic is **not** a selected-choice probability and is not substituted for one. `decide` now also returns it as `confidence` (null when unavailable); `evaluate` places it in per-question metadata. Rounded native distributions may sum to 99% or 101%; their values are preserved. Estimates are validated, not silently normalized. Tied estimates use input order as the tie-breaker.
 
 ## Decision policies and profiles
 
@@ -126,13 +184,13 @@ See [multiple-profiles.json](examples/multiple-profiles.json) for a complete Jev
 }
 ```
 
-| `tools`            | Exposed tools                                     | Behavior of `decide`                                                   |
-| ------------------ | ------------------------------------------------- | ---------------------------------------------------------------------- |
-| `routed` (default) | `decide`                                          | Chooses a profile, then evaluates the decision.                        |
-| `separate`         | `decide`, `decide-default`, `decide-<profile-id>` | Uses the default policy. The calling agent chooses a specialized tool. |
-| `both`             | All of the above                                  | Routes automatically; explicit tools bypass routing.                   |
+| `tools`            | Exposed tools                                                 | Behavior of `decide`                                                   |
+| ------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `routed` (default) | `decide`, `evaluate`                                          | Chooses a profile, then evaluates the decision.                        |
+| `separate`         | `decide`, `evaluate`, `decide-default`, `decide-<profile-id>` | Uses the default policy. The calling agent chooses a specialized tool. |
+| `both`             | All of the above                                              | Routes automatically; explicit tools bypass routing.                   |
 
-With no profiles, `decide` makes one model call. With profiles and routing enabled, it makes two: one to select a profile from its description, one to evaluate with that policy. Explicit tools always make one call. Profiles do not vote or blend scores.
+With no profiles, `decide` makes one model call. With profiles and routing enabled, it makes two: one to select a profile from its description, one to evaluate with that policy. Explicit tools always make one call. Profiles do not vote or blend scores. The `evaluate` tool is available in every mode and never automatically routes.
 
 This is a **two-stage decision tree**. A single router keeps latency bounded and makes policy selection observable. Recursive trees are not implemented. If profiles become numerous enough to need a hierarchy, that can be added as an explicit configuration structure.
 
@@ -185,20 +243,30 @@ The factory must return an AI SDK provider with `languageModel(id)` or `evaluati
 
 ## Runtime and verification
 
+The server uses functional Effect v4 for configuration decoding, provider resolution, decision scoring, shared request deadlines, and MCP request and transport lifetimes. Domain schemas use Effect Schema; typed failures stay in the Effect error channel. Promises are confined to AI SDK, custom-provider, and MCP transport integration boundaries. A scoped Effect FiberSet owns MCP request fibers and interrupts them during shutdown. The MCP TypeScript SDK remains the wire adapter: Effect rc.115's native MCP server converts numeric cancellation IDs to strings, so it cannot cancel numeric-ID requests from SDK clients. An E2E regression verifies cancellation through the retained adapter.
+
+Language-mode scoring runs a tool-free `effect-agent` agent with a schema-validated output, one model turn, and a fresh in-memory history scope per call. An application-specific Effect language-model adapter keeps all existing AI SDK providers, credential settings, structured output, and retry behavior. The adapter buffers the structured response before exposing it as Effect stream parts. Native Jev evaluation continues to use `experimental_evaluate`, preserving provider distributions rather than converting them into generated estimates.
+
+This migration pins `effect` and `@effect/platform-node` to `4.0.0-rc.115` and `effect-agent` to `0.1.0-beta.103`. These are prereleases. Node.js 22.19 or newer is required by the platform dependency. As of September 17, 2026, the newest published `effect-agent` release is on the `beta` tag; its peer dependency requires this Effect v4 release candidate. The npm `latest` tag still points to the older `0.0.1-beta.3`, so use the pinned versions and lockfile when developing.
+
 `timeoutMs` defaults to 30,000 and covers routing, retries, and evaluation together. `maxRetries` defaults to 2 for transient provider failures. Client cancellation propagates to provider requests. Invalid inputs fail before model calls. Provider failures and invalid model output return an MCP tool error with no recommendation; raw provider exception details are not returned because they may contain sensitive request data.
 
 Each request is independent. There is no conversation memory, persistence, action execution, or cross-request policy mutation. Decision data is sent to the configured provider. Configured prompts guide model behavior; they are not a security boundary against prompt injection.
 
+Development source, test fixtures, and tool configurations are TypeScript. Imports omit file extensions, with TypeScript using bundler resolution to match the Bun build. The `#mcp/*` package import map handles the MCP SDK's extension-required export paths while keeping source imports extensionless.
+
+Linting uses Oxlint with the `recommended` and `testing` presets from [`@dakdevs/oxlint-plugin/config`](https://github.com/dakdevs/oxlint-plugin), plus consistent type imports and extensionless imports. The shared config is pinned to a Git commit and its supported Oxlint 1.80 release. Formatting uses Oxfmt.
+
 ```sh
 bun run lint
-bun run prettier
+bun run fmt
 bun run format:check
 bun run typecheck
 bun test
 bun run test:e2e
 ```
 
-Unit tests cover schemas, scoring semantics, routing thresholds, cancellation, and custom factories. E2E tests launch the built Node CLI through the actual MCP stdio client and use local HTTP provider fixtures with real AI SDK adapters. They cover native TypeSafe/Gateway transport, language estimates, tool discovery, routing, validation, timeout, malformed responses, and error redaction. A package test packs the release, installs it in a temporary directory using npm, and verifies its executable and MCP handshake without relying on workspace dependencies. That test needs npm registry access. These checks do not establish real model quality or live provider access; live calls require an operator-provided API key.
+Unit tests cover schemas, scoring semantics, routing thresholds, provider interruption, a shared deadline using Effect TestClock, concurrent language-agent isolation, bounded agent execution, and custom factories. E2E tests launch the built Node CLI through the actual MCP stdio client and use local HTTP provider fixtures with real AI SDK adapters. They cover native TypeSafe/Gateway transport, language estimates, tool discovery, routing, validation, timeout, client cancellation, malformed responses, startup failures, and error redaction. A package test packs the release, installs it in a temporary directory using npm, and verifies its executable and MCP handshake without relying on workspace dependencies. That test needs npm registry access. These checks do not establish real model quality or live provider access; live calls require an operator-provided API key.
 
 ## Release
 
@@ -212,4 +280,6 @@ Licensed under the [MIT license](license.md).
 - [AI SDK provider management](https://ai-sdk.dev/docs/ai-sdk-core/provider-management)
 - [Jev on AI Gateway](https://vercel.com/ai-gateway/models/jev)
 - [TypeSafe AI SDK](https://github.com/typesafe-ai/typesafe-sdk-js)
+- [Effect v4 documentation](https://effect.website/v4/)
+- [effect-agent](https://github.com/danieljvdm/effect-agent)
 - [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x)
