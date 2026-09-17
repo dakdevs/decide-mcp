@@ -1,0 +1,71 @@
+{
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.56",
+    "@ai-sdk/gateway": "4.0.85",
+    "@ai-sdk/google": "4.0.74",
+    "@ai-sdk/openai": "4.0.69",
+    "@ai-sdk/openai-compatible": "3.0.51",
+    "@ai-sdk/typesafe-ai": "3.0.2",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "ai": "7.0.105",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/bun": "1.4.2",
+    "eslint": "10.10.0",
+    "prettier": "3.9.7",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0"
+  },
+  "name": "decide-mcp",
+  "version": "0.1.0",
+  "description": "Configurable decision MCP with AI SDK evaluation, choice percentages, and bias routing.",
+  "type": "module",
+  "bin": {
+    "decide-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "readme.md",
+    "examples",
+    "license.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "build": "bun build src/cli.ts --target=node --packages=external --outdir=dist",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "prettier": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "bun test",
+    "test:e2e": "bun run build && bun test tests/e2e",
+    "prepack": "bun run build >&2"
+  },
+  "license": "MIT",
+  "author": "Dak Washbrook <hey@dak.dev> (https://dak.dev)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dakdevs/decide-mcp.git"
+  },
+  "homepage": "https://github.com/dakdevs/decide-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/dakdevs/decide-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "ai-sdk",
+    "jev",
+    "decisions",
+    "agents",
+    "model-context-protocol"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

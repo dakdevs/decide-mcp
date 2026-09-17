@@ -1,0 +1,22 @@
+{
+  "systemPrompt": "Respect the constraints in the decision context. Prefer reversible actions when evidence is weak.",
+  "tools": "both",
+  "router": { "minimumProbability": 0.7 },
+  "profiles": [
+    {
+      "id": "reliability",
+      "description": "Production releases, operational risk, data integrity, and service reliability.",
+      "systemPrompt": "Favor reliability, data integrity, and safe rollback over speed or short-term savings."
+    },
+    {
+      "id": "cost",
+      "description": "Purchasing, infrastructure sizing, and resource allocation where cost is the main tradeoff.",
+      "systemPrompt": "Minimize total cost, including maintenance and opportunity cost, while meeting the requirements."
+    },
+    {
+      "id": "delivery",
+      "description": "Feature scope, prototypes, and implementation choices where time to a useful result is the main tradeoff.",
+      "systemPrompt": "Favor the smallest useful step that can ship quickly and be changed later."
+    }
+  ]
+}

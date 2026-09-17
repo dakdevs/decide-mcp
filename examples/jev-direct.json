@@ -1,0 +1,11 @@
+{
+  "model": {
+    "provider": "typesafe",
+    "model": "jev-latest",
+    "mode": "evaluation"
+  },
+  "providers": {
+    "typesafe": { "kind": "typesafe", "apiKeyEnv": "TYPESAFE_AI_API_KEY" }
+  },
+  "systemPrompt": "Favor simple, reversible choices that satisfy the stated requirements."
+}
